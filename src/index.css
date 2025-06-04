@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-white dark:bg-dark-primary text-gray-900 dark:text-dark-text;
+  }
+}
+
+/* Custom styles for the chart */
+.lightweight-charts {
+  @apply w-full;
+}
+
+/* Dark mode transitions */
+.dark {
+  @apply transition-colors duration-200;
+} 
