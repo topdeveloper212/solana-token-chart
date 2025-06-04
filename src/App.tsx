@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection, PublicKey, ConfirmedSignatureInfo, RpcResponseAndContext, TokenAccountBalancePair } from '@solana/web3.js';
 import html2canvas from 'html2canvas';
 import { TokenChart, TokenForm, ChartControls, ErrorDisplay } from './components';
 import { DEFAULT_RPCS, KNOWN_TOKENS } from './constants';
@@ -51,34 +51,105 @@ function App() {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    console.log('Starting to fetch data...');
 
     try {
+      // Test RPC connection first with retry logic
       const connection = new Connection(rpcUrl, 'confirmed');
-      let tokenPublicKey: PublicKey;
+      let rpcConnected = false;
+      let retryCount = 0;
+      const maxRetries = 3;
 
-      if (Object.keys(KNOWN_TOKENS).includes(tokenAddress.toUpperCase())) {
-        tokenPublicKey = new PublicKey(KNOWN_TOKENS[tokenAddress.toUpperCase() as keyof typeof KNOWN_TOKENS]);
-      } else {
-        tokenPublicKey = new PublicKey(tokenAddress);
+      while (!rpcConnected && retryCount < maxRetries) {
+        try {
+          await connection.getVersion();
+          rpcConnected = true;
+          console.log('Successfully connected to RPC endpoint');
+        } catch (error) {
+          retryCount++;
+          console.warn(`RPC connection attempt ${retryCount} failed:`, error);
+          if (retryCount === maxRetries) {
+            throw new Error('Failed to connect to RPC endpoint. Please try a different RPC URL.');
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+        }
       }
 
+      let tokenPublicKey: PublicKey;
+      try {
+        if (Object.keys(KNOWN_TOKENS).includes(tokenAddress.toUpperCase())) {
+          tokenPublicKey = new PublicKey(KNOWN_TOKENS[tokenAddress.toUpperCase() as keyof typeof KNOWN_TOKENS]);
+        } else {
+          tokenPublicKey = new PublicKey(tokenAddress);
+        }
+      } catch (error) {
+        throw new Error('Invalid token address. Please check and try again.');
+      }
+
+      console.log('Token Public Key:', tokenPublicKey.toString());
+
+      // Get token accounts
       const tokenAccounts = await connection.getTokenLargestAccounts(tokenPublicKey);
+      console.log('Token Accounts:', tokenAccounts.value.length);
+      
       if (!tokenAccounts.value.length) {
         throw new Error('No token accounts found');
       }
 
-      const signatures = await connection.getSignaturesForAddress(tokenPublicKey, { limit: 100 });
+      // Get signatures for the last 24 hours only
+      const oneDayAgo = new Date();
+      oneDayAgo.setDate(oneDayAgo.getDate() - 1);
+      
+      const signatures = await connection.getSignaturesForAddress(
+        tokenPublicKey,
+        { limit: 1000 },
+        'confirmed'
+      );
+
+      console.log('Total signatures found:', signatures.length);
+
       if (!signatures.length) {
         throw new Error('No transaction history found');
       }
 
-      const transactions = await Promise.all(
-        signatures.map(sig => connection.getTransaction(sig.signature, { maxSupportedTransactionVersion: 0 }))
+      // Filter signatures from the last 24 hours
+      const recentSignatures = signatures.filter(sig => 
+        sig.blockTime && new Date(sig.blockTime * 1000) > oneDayAgo
       );
 
-      const ohlcData = processTransactions(transactions, 6);
+      console.log('Recent signatures (last 24h):', recentSignatures.length);
+
+      if (!recentSignatures.length) {
+        throw new Error('No recent transactions found in the last 24 hours');
+      }
+
+      // Get transaction details for recent signatures
+      console.log('Fetching transaction details...');
+      const transactions = await Promise.all(
+        recentSignatures.map(sig => 
+          connection.getTransaction(sig.signature, { 
+            maxSupportedTransactionVersion: 0,
+            commitment: 'confirmed'
+          })
+        )
+      );
+
+      const validTransactions = transactions.filter(tx => 
+        tx && tx.meta && !tx.meta.err && tx.meta.preTokenBalances && tx.meta.postTokenBalances
+      );
+
+      console.log('Valid transactions:', validTransactions.length);
+
+      if (validTransactions.length === 0) {
+        throw new Error('No valid transactions found');
+      }
+
+      console.log('Processing transactions...');
+      const ohlcData = processTransactions(validTransactions, 24);
+      console.log('OHLC data points:', ohlcData.length);
+      
       if (!ohlcData.length) {
-        throw new Error('No valid transaction data found');
+        throw new Error('No valid price data found');
       }
 
       setChartData(ohlcData);
@@ -86,8 +157,10 @@ function App() {
         name: tokenAddress.toUpperCase(),
         symbol: tokenAddress.toUpperCase()
       });
+      console.log('Chart data set successfully');
 
     } catch (err) {
+      console.error('Error occurred:', err);
       setError(err instanceof Error ? err.message : 'An error occurred');
       setChartData([]);
       setTokenInfo(null);

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { ChartData } from '../types';
 
@@ -17,46 +17,91 @@ export const TokenChart: React.FC<TokenChartProps> = ({
   chartRef,
   onZoomChange 
 }) => {
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? -0.1 : 0.1;
-    const newZoom = Math.max(0.5, Math.min(2, zoomLevel + delta));
-    onZoomChange(newZoom);
-  }, [zoomLevel, onZoomChange]);
+  // Use useEffect to add and remove the wheel event listener
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.1 : 0.1;
+      const newZoom = Math.max(0.5, Math.min(2, zoomLevel + delta));
+      onZoomChange(newZoom);
+    };
 
-  // Calculate time range based on zoom level
-  const timeRange = useMemo(() => {
-    if (zoomLevel >= 1.8) return 6; // 6 hours
-    if (zoomLevel >= 1.5) return 12; // 12 hours
-    if (zoomLevel >= 1.2) return 18; // 18 hours
-    if (zoomLevel >= 0.8) return 24; // 24 hours
-    return 48; // 48 hours
-  }, [zoomLevel]);
-
-  // Filter data based on time range
-  const filteredData = useMemo(() => {
-    const now = new Date();
-    const startTime = new Date(now.getTime() - (timeRange * 60 * 60 * 1000));
-    return chartData.filter(data => new Date(data.time) >= startTime);
-  }, [chartData, timeRange]);
+    const element = chartRef.current;
+    if (element) {
+      element.addEventListener('wheel', handleWheel, { passive: false });
+      return () => {
+        element.removeEventListener('wheel', handleWheel);
+      };
+    }
+  }, [zoomLevel, onZoomChange, chartRef]);
 
   // Format time based on interval
   const formatTime = (time: string) => {
     const date = new Date(time);
     const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    return `${hours}:${minutes}`;
+    return `${hours}:00`;
   };
+
+  // Format price value
+  const formatPrice = (value: number) => {
+    return `$${value.toFixed(4)}`;
+  };
+
+  // Calculate bar color based on price movement
+  const getBarColor = (data: ChartData) => {
+    if (!data) return '#666666';
+    return data.close >= data.open ? '#22c55e' : '#ef4444';
+  };
+
+  // Custom bar component with color based on price movement
+  const CustomBar = (props: any) => {
+    const { x, y, width, height, payload } = props;
+    if (!payload) return null;
+    
+    const color = getBarColor(payload);
+    return (
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        fill={color}
+        stroke={color}
+        strokeWidth={1}
+        rx={4}
+        ry={4}
+      />
+    );
+  };
+
+  // Calculate domain for Y axis
+  const yAxisDomain = useMemo(() => {
+    if (!chartData.length) return [0, 1];
+    const min = Math.min(...chartData.map(d => d.low));
+    const max = Math.max(...chartData.map(d => d.high));
+    const padding = (max - min) * 0.1;
+    return [Math.max(0, min - padding), max + padding];
+  }, [chartData]);
+
+  if (!chartData.length) {
+    return (
+      <div className="w-full h-[80vh] flex items-center justify-center text-gray-500">
+        No data available
+      </div>
+    );
+  }
 
   return (
     <div 
       ref={chartRef} 
       className="w-full h-[80vh]" 
       style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left' }}
-      onWheel={handleWheel}
     >
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={filteredData} barSize={8} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+        <BarChart 
+          data={chartData} 
+          margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+        >
           <CartesianGrid strokeDasharray="3 3" stroke={isDarkMode ? '#2c2d31' : '#f1f1f1'} />
           <XAxis 
             dataKey="time" 
@@ -65,9 +110,10 @@ export const TokenChart: React.FC<TokenChartProps> = ({
             tickFormatter={formatTime}
           />
           <YAxis 
+            domain={yAxisDomain}
             stroke={isDarkMode ? '#e2e8f0' : '#1a1a1a'}
             tick={{ fill: isDarkMode ? '#e2e8f0' : '#1a1a1a', fontSize: 12 }}
-            tickFormatter={(value) => `$${value.toFixed(4)}`}
+            tickFormatter={formatPrice}
           />
           <Tooltip 
             contentStyle={{ 
@@ -77,6 +123,7 @@ export const TokenChart: React.FC<TokenChartProps> = ({
             }}
             formatter={(value: number, name: string, props: any) => {
               const data = props.payload;
+              if (!data) return null;
               const date = new Date(data.time);
               return [
                 <div key="tooltip" className="space-y-1 text-sm">
@@ -90,15 +137,11 @@ export const TokenChart: React.FC<TokenChartProps> = ({
               ];
             }}
           />
-          {filteredData.map((data, index) => (
-            <Bar
-              key={index}
-              dataKey="value"
-              fill={data.close >= data.open ? '#166534' : '#991b1b'}
-              stroke={data.close >= data.open ? '#166534' : '#991b1b'}
-              strokeWidth={1}
-            />
-          ))}
+          <Bar
+            dataKey="close"
+            shape={<CustomBar />}
+            barSize={20}
+          />
         </BarChart>
       </ResponsiveContainer>
     </div>
